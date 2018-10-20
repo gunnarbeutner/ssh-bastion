@@ -2,27 +2,27 @@ package main
 
 import (
 	"fmt"
-	"log"
-	"golang.org/x/crypto/ssh"
 	ldap "github.com/tonnerre/go-ldap"
+	"golang.org/x/crypto/ssh"
+	"log"
 	"strings"
 )
 
 func AuthUserPass(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	perm := &ssh.Permissions{
 		Extensions: map[string]string{
-			"authType":	 "password",
-			"password":	 string(password),
+			"authType": "password",
+			"password": string(password),
 		},
 	}
 	var usr string
-	if (strings.Contains(conn.User(), "#")) {
+	if strings.Contains(conn.User(), "#") {
 		rawuser := strings.Split(conn.User(), "#")
 		usr = rawuser[0]
 	} else {
 		usr = conn.User()
 	}
-	if _, ok := config.Users[usr]; ! ok {
+	if _, ok := config.Users[usr]; !ok {
 		return nil, fmt.Errorf("User Doesn't Exist in Config")
 	}
 	if string(password) == "" {

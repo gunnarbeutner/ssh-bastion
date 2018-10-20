@@ -1,42 +1,42 @@
 package main
 
 import (
-	"fmt"
-	"net"
-	"log"
-	"time"
 	"bytes"
-	"strings"
-	"io/ioutil"
+	"fmt"
 	"golang.org/x/crypto/ssh"
+	"io/ioutil"
+	"log"
+	"net"
+	"strings"
+	"time"
 )
 
 type SSHServer struct {
-	sshConfig	   *ssh.ServerConfig
+	sshConfig *ssh.ServerConfig
 }
 
 func NewSSHServer() (*SSHServer, error) {
 	s := &SSHServer{
-		sshConfig:	  &ssh.ServerConfig{
-			NoClientAuth:	   false,
-			ServerVersion:	  "SSH-2.0-BASTION",
-			AuthLogCallback:	func(conn ssh.ConnMetadata, method string, err error){
+		sshConfig: &ssh.ServerConfig{
+			NoClientAuth:  false,
+			ServerVersion: "SSH-2.0-BASTION",
+			AuthLogCallback: func(conn ssh.ConnMetadata, method string, err error) {
 				if err != nil {
 					WriteAuthLog("Failed %s for user %s from %s ssh2", method, conn.User(), conn.RemoteAddr())
 				} else {
 					WriteAuthLog("Accepted %s for user %s from %s ssh2", method, conn.User(), conn.RemoteAddr())
 				}
 			},
-			PasswordCallback:   AuthUserPass,
-			PublicKeyCallback:  func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			        var usr string
-			        if (strings.Contains(conn.User(), "#")) {
-			                rawuser := strings.Split(conn.User(), "#")
-			                usr = rawuser[0]
-			        } else {
-			                usr = conn.User()
-			        }
-				if user, ok := config.Users[usr]; ! ok {
+			PasswordCallback: AuthUserPass,
+			PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+				var usr string
+				if strings.Contains(conn.User(), "#") {
+					rawuser := strings.Split(conn.User(), "#")
+					usr = rawuser[0]
+				} else {
+					usr = conn.User()
+				}
+				if user, ok := config.Users[usr]; !ok {
 					return nil, fmt.Errorf("User Not Found in Config for PK")
 				} else {
 					if len(user.AuthorizedKeysFile) > 0 {
@@ -56,10 +56,10 @@ func NewSSHServer() (*SSHServer, error) {
 									return nil, fmt.Errorf("Error while processing authorized keys file.")
 								}
 
-								if ( key.Type() == authKey.Type() ) && ( bytes.Compare(key.Marshal(), authKey.Marshal()) == 0 ) {
+								if (key.Type() == authKey.Type()) && (bytes.Compare(key.Marshal(), authKey.Marshal()) == 0) {
 									perm := &ssh.Permissions{
 										Extensions: map[string]string{
-											"authType":	 "pk",
+											"authType": "pk",
 										},
 									}
 									return perm, nil
@@ -93,7 +93,7 @@ func NewSSHServer() (*SSHServer, error) {
 	return s, nil
 }
 
-func (s *SSHServer) ListenAndServe(addr string) (error) {
+func (s *SSHServer) ListenAndServe(addr string) error {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -140,10 +140,10 @@ func (s *SSHServer) HandleConn(c net.Conn) {
 	}
 
 	switch newChannel.ChannelType() {
-		case "session":
-			s.SessionForward(startTime, sshConn, newChannel, chans)
-		default:
-			newChannel.Reject(ssh.UnknownChannelType, "connection flow not supported, only interactive sessions are permitted.")
+	case "session":
+		s.SessionForward(startTime, sshConn, newChannel, chans)
+	default:
+		newChannel.Reject(ssh.UnknownChannelType, "connection flow not supported, only interactive sessions are permitted.")
 	}
 
 	//log.Printf("ALL OK, closing as nothing left to do...")

@@ -1,18 +1,18 @@
 package main
 
 import (
-	"io"
-	"fmt"
-	"log"
-	"net"
-	"sync"
-	"time"
 	"bytes"
-	"io/ioutil"
-	"strings"
+	"fmt"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/terminal"
+	"io"
+	"io/ioutil"
+	"log"
+	"net"
+	"strings"
+	"sync"
+	"time"
 )
 
 type rw struct {
@@ -31,19 +31,19 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 
 	var usr string
 	var lgnusr string
-	if (strings.Contains(sshConn.User(), "#")) {
+	if strings.Contains(sshConn.User(), "#") {
 		rawuser := strings.Split(sshConn.User(), "#")
-                if (len(rawuser) == 2) {
-                        usr = rawuser[0]
+		if len(rawuser) == 2 {
+			usr = rawuser[0]
 			lgnusr = rawuser[0]
-                } else if (len(rawuser) == 3) {
-                        usr = rawuser[0]
+		} else if len(rawuser) == 3 {
+			usr = rawuser[0]
 			lgnusr = rawuser[1]
-                } else {
-                        //fmt.Fprintf(sesschan, "Failed to Initialize Session. If you are using # in the username, you can use:\r\n- auth_user#remote_server\r\n- auth_user#remote_user#remote_server\r\n")
-                        //sesschan.Close()
-                        return
-                }
+		} else {
+			//fmt.Fprintf(sesschan, "Failed to Initialize Session. If you are using # in the username, you can use:\r\n- auth_user#remote_server\r\n- auth_user#remote_user#remote_server\r\n")
+			//sesschan.Close()
+			return
+		}
 	} else {
 		usr = sshConn.User()
 	}
@@ -64,7 +64,7 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 
 	// Proxy the channel and its requests
 	var agentForwarding bool = false
-	fmt.Println("agentForwarding",agentForwarding)
+	fmt.Println("agentForwarding", agentForwarding)
 	maskedReqs := make(chan *ssh.Request, 5)
 	go func() {
 		// For the pty-req and shell request types, we have to reply to those right away.
@@ -98,28 +98,28 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 	var remote SSHConfigServer
 	var remote_name string
 
-	if user, ok := config.Users[usr]; ! ok {
+	if user, ok := config.Users[usr]; !ok {
 		fmt.Fprintf(sesschan, "User %s has no permitted remote hosts.\r\n", usr)
 		sesschan.Close()
 		return
 	} else {
-		if acl, ok := config.ACLs[user.ACL]; ! ok {
+		if acl, ok := config.ACLs[user.ACL]; !ok {
 			fmt.Fprintf(sesschan, "Error processing server selection (Invalid ACL).\r\n")
 			log.Printf("Invalid ACL detected for user %s.", sshConn.User())
 			sesschan.Close()
 			return
 		} else {
 			var svr string
-			if (strings.Contains(sshConn.User(), "#")) {
+			if strings.Contains(sshConn.User(), "#") {
 				rawuser := strings.Split(sshConn.User(), "#")
 				svrok := false
 				for i := range acl.AllowedServers {
-					if (rawuser[len(rawuser)-1] == acl.AllowedServers[i]) {
+					if rawuser[len(rawuser)-1] == acl.AllowedServers[i] {
 						svrok = true
 						svr = rawuser[len(rawuser)-1]
 					}
 				}
-				if (svrok == false) {
+				if svrok == false {
 					fmt.Fprintf(sesschan, "Error processing server selection.\r\n")
 					log.Printf("Invalid ACL detected for user %s.", sshConn.User())
 					sesschan.Close()
@@ -133,7 +133,7 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 					return
 				}
 			}
-			if server, ok := config.Servers[svr]; ! ok {
+			if server, ok := config.Servers[svr]; !ok {
 				fmt.Fprintf(sesschan, "Incorrectly Configured Server Selected.\r\n")
 				sesschan.Close()
 				return
@@ -144,9 +144,9 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 		}
 	}
 	trm := terminal.NewTerminal(sesschan, "")
-	fmt.Fprintf(sesschan, "You will connect to %s with the username %s, press enter to continue.\r\n",remote_name, lgnusr)
-	_ , _ = trm.ReadLine()
-	if (strings.Contains(sshConn.User(), "#") == false) {
+	fmt.Fprintf(sesschan, "You will connect to %s with the username %s, press enter to continue.\r\n", remote_name, lgnusr)
+	_, _ = trm.ReadLine()
+	if strings.Contains(sshConn.User(), "#") == false {
 		fmt.Fprintf(sesschan, "Do you want to specify a user? (If not, just keep it blank): ")
 		lgnusr, _ = trm.ReadLine()
 	}
@@ -162,13 +162,13 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 	var clientConfig *ssh.ClientConfig
 	var lgnauth []ssh.AuthMethod
 	cnfuser := config.Users[usr]
-	fmt.Println("agentForwarding",agentForwarding)
-	if (agentForwarding == false) {
+	fmt.Println("agentForwarding", agentForwarding)
+	if agentForwarding == false {
 		if len(cnfuser.IdrsaKeysFile) > 0 {
 			fmt.Fprintf(sesschan, "Do you want to do auth using the keyfile? [y/n]: ")
 			var keyd string
 			keyd, _ = trm.ReadLine()
-			if (keyd == "y") {
+			if keyd == "y" {
 				key, err := ioutil.ReadFile(cnfuser.IdrsaKeysFile)
 				if err != nil {
 					log.Fatalf("unable to read private key: %v", err)
@@ -213,11 +213,11 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 			}
 		}
 	}
-	fmt.Println("agentForwarding",agentForwarding)
+	fmt.Println("agentForwarding", agentForwarding)
 	clientConfig = &ssh.ClientConfig{
-		User:			   lgnusr,
-		Auth:			   lgnauth,
-		HostKeyCallback:	func(hostname string, remote_addr net.Addr, key ssh.PublicKey) error {
+		User: lgnusr,
+		Auth: lgnauth,
+		HostKeyCallback: func(hostname string, remote_addr net.Addr, key ssh.PublicKey) error {
 			for _, keyFileName := range remote.HostPubKeyFiles {
 				hostKeyData, err := ioutil.ReadFile(keyFileName)
 				if err != nil {
@@ -231,13 +231,13 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 					continue
 				}
 
-				if ( key.Type() == hostKey.Type() ) && ( bytes.Compare(key.Marshal(), hostKey.Marshal()) == 0 ) {
+				if (key.Type() == hostKey.Type()) && (bytes.Compare(key.Marshal(), hostKey.Marshal()) == 0) {
 					log.Printf("Accepting host public key from file (%s) for remote (%s).", keyFileName, remote_name)
 					return nil
 				}
 			}
 			WriteAuthLog("Host key validation failed for remote %s by user %s from %s.", remote.ConnectPath, sshConn.User(), remote_addr)
-			if (config.Global.StrictHostKeyCheck) {
+			if config.Global.StrictHostKeyCheck {
 				return fmt.Errorf("HOST KEY VALIDATION FAILED - POSSIBLE MITM BETWEEN RELAY AND REMOTE")
 			} else {
 				return nil
@@ -259,7 +259,7 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 			ag := agent.NewClient(agentChan)
 
 			// Make sure PK is first in the list if supported.
-			clientConfig.Auth = append([]ssh.AuthMethod{ ssh.PublicKeysCallback(ag.Signers) }, clientConfig.Auth...)
+			clientConfig.Auth = append([]ssh.AuthMethod{ssh.PublicKeysCallback(ag.Signers)}, clientConfig.Auth...)
 		}
 	}
 
@@ -312,26 +312,26 @@ func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1 *LogChannel, channel2 ssh.
 
 	for {
 		select {
-			case req := <-reqs1:
-				if req == nil {
-					return
-				}
-				b, err := channel2.SendRequest(req.Type, req.WantReply, req.Payload)
-				if err != nil {
-					return
-				}
-				req.Reply(b, nil)
-			case req := <-reqs2:
-				if req == nil {
-					return
-				}
-				b, err := channel1.SendRequest(req.Type, req.WantReply, req.Payload)
-				if err != nil {
-					return
-				}
-				req.Reply(b, nil)
-			case <-closerChan:
+		case req := <-reqs1:
+			if req == nil {
 				return
+			}
+			b, err := channel2.SendRequest(req.Type, req.WantReply, req.Payload)
+			if err != nil {
+				return
+			}
+			req.Reply(b, nil)
+		case req := <-reqs2:
+			if req == nil {
+				return
+			}
+			b, err := channel1.SendRequest(req.Type, req.WantReply, req.Payload)
+			if err != nil {
+				return
+			}
+			req.Reply(b, nil)
+		case <-closerChan:
+			return
 		}
 	}
 }
