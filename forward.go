@@ -1,26 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-type rw struct {
-	io.Reader
-	io.Writer
-}
-
-func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn, newChannel ssh.NewChannel, chans <-chan ssh.NewChannel) {
+func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn, newChannel ssh.NewChannel, chans <-chan ssh.NewChannel, userName, targetAddress string, groupSIDs []string) {
 	rawsesschan, sessReqs, err := newChannel.Accept()
 	if err != nil {
 		log.Printf("Unable to Accept Session, closing connection...")
@@ -29,26 +23,121 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 	}
 	defer sshConn.Close()
 
-	var usr string
-	var lgnusr string
-	if strings.Contains(sshConn.User(), "#") {
-		rawuser := strings.Split(sshConn.User(), "#")
-		if len(rawuser) == 2 {
-			usr = rawuser[0]
-			lgnusr = rawuser[0]
-		} else if len(rawuser) == 3 {
-			usr = rawuser[0]
-			lgnusr = rawuser[1]
-		} else {
-			//fmt.Fprintf(sesschan, "Failed to Initialize Session. If you are using # in the username, you can use:\r\n- auth_user#remote_server\r\n- auth_user#remote_user#remote_server\r\n")
-			//sesschan.Close()
-			return
+	sesschan := NewLogChannel(startTime, rawsesschan, userName)
+
+	readyChan := make(chan bool, 1)
+
+	// Proxy the channel and its requests
+	maskedReqs := make(chan *ssh.Request, 5)
+	go func() {
+		// For the pty-req and shell request types, we have to reply to those right away.
+		// This is for PuTTy compatibility - if we don't, it won't allow any input.
+		// We also have to change them to WantReply = false,
+		// or a double reply will cause a fatal error client side.
+		for req := range sessReqs {
+			if req.Type == "auth-agent-req@openssh.com" {
+				if req.WantReply {
+					req.Reply(true, []byte{})
+				}
+				continue
+			} else if req.Type == "pty-req" && req.WantReply {
+				req.Reply(true, []byte{})
+				req.WantReply = false
+			} else if req.Type == "shell" && req.WantReply {
+				req.Reply(true, []byte{})
+				req.WantReply = false
+
+				readyChan <- true
+			} else if req.Type == "exec" {
+				readyChan <- true
+			}
+
+			maskedReqs <- req
 		}
-	} else {
-		usr = sshConn.User()
+	}()
+
+	<-readyChan
+
+	logFilename := strings.Split(targetAddress, ":")[0]
+	sanitizedLogFilename := strings.Replace(logFilename, "/", "_", -1)
+	err = sesschan.SyncToFile(sanitizedLogFilename)
+	if err != nil {
+		fmt.Fprintf(sesschan, "Failed to Initialize Session.\r\n")
+		sesschan.Close()
+		return
 	}
 
-	sesschan := NewLogChannel(startTime, rawsesschan, usr)
+	var privateKeys []ssh.Signer
+
+	for _, sid := range groupSIDs {
+		keys, ok := config.Keys[sid]
+		if !ok {
+			continue
+		}
+
+		for _, keyPath := range keys {
+			userKey, err := ioutil.ReadFile(keyPath)
+			if err != nil {
+				log.Printf("Could not load private key file %s: %v", keyPath, err)
+				continue
+			}
+
+			signer, err := ssh.ParsePrivateKey(userKey)
+			if err != nil {
+				log.Printf("Could not parse private key file %s: %v", keyPath, err)
+				continue
+			}
+
+			privateKeys = append(privateKeys, signer)
+		}
+	}
+
+	WriteAuthLog("Connecting to remote for relay (%s) by %s from %s.", targetAddress, userName, sshConn.RemoteAddr())
+	var clientConfig *ssh.ClientConfig
+	clientConfig = &ssh.ClientConfig{
+		User: sshConn.User(),
+		Auth: []ssh.AuthMethod{ssh.PublicKeys(privateKeys...)},
+		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			checker, err := knownhosts.New(config.Global.KnownHostsFile)
+			if err != nil {
+				return err
+			}
+			err = checker(hostname, remote, key)
+			if err == nil {
+				return nil
+			}
+
+			keyError := err.(*knownhosts.KeyError)
+			if len(keyError.Want) != 0 {
+				return err
+			}
+
+			f, err := os.OpenFile(config.Global.KnownHostsFile, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				return err
+			}
+
+			defer f.Close()
+
+			line := knownhosts.Line([]string{hostname}, key) + "\n"
+
+			if _, err = f.WriteString(line); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}
+
+	log.Printf("Getting ready to dial remote SSH %s", targetAddress)
+	client, err := ssh.Dial("tcp", targetAddress, clientConfig)
+	if err != nil {
+		fmt.Fprintf(sesschan, "Connect failed: %v\r\n", err)
+		sesschan.Close()
+		return
+	}
+	defer client.Close()
+	log.Printf("Dialled remote SSH Successfully...")
 
 	// Handle all incoming channel requests
 	go func() {
@@ -57,238 +146,43 @@ func (s *SSHServer) SessionForward(startTime time.Time, sshConn *ssh.ServerConn,
 				return
 			}
 
-			newChannel.Reject(ssh.Prohibited, "remote server denied channel request")
-			continue
-		}
-	}()
-
-	// Proxy the channel and its requests
-	var agentForwarding bool = false
-	fmt.Println("agentForwarding", agentForwarding)
-	maskedReqs := make(chan *ssh.Request, 5)
-	go func() {
-		// For the pty-req and shell request types, we have to reply to those right away.
-		// This is for PuTTy compatibility - if we don't, it won't allow any input.
-		// We also have to change them to WantReply = false,
-		// or a double reply will cause a fatal error client side.
-		for req := range sessReqs {
-			sesschan.LogRequest(req)
-			if req.Type == "auth-agent-req@openssh.com" {
-				agentForwarding = true
-				if req.WantReply {
-					req.Reply(true, []byte{})
-				}
+			if newChannel.ChannelType() != "direct-tcpip" {
+				newChannel.Reject(ssh.Prohibited, "remote server denied channel request")
 				continue
-			} else if (req.Type == "pty-req") && (req.WantReply) {
-				req.Reply(true, []byte{})
-				req.WantReply = false
-			} else if (req.Type == "shell") && (req.WantReply) {
-				req.Reply(true, []byte{})
-				req.WantReply = false
 			}
-			maskedReqs <- req
+
+			log.Printf("Setting up TCP/IP channel to remote %s", targetAddress)
+			channel2, reqs2, err := client.OpenChannel(newChannel.ChannelType(), newChannel.ExtraData())
+			if err != nil {
+				newChannel.Reject(ssh.ConnectionFailed, "channel request failed")
+				continue
+			}
+
+			channel, reqs, err := newChannel.Accept()
+			if err != nil {
+				continue
+			}
+
+			go proxy(reqs, reqs2, channel, channel2, sesschan)
 		}
 	}()
-
-	// Set the window header to SSH Relay login.
-	fmt.Fprintf(sesschan, "%s]0;SSH Bastion Relay Login%s", []byte{27}, []byte{7})
-
-	fmt.Fprintf(sesschan, "%s\r\n", GetMOTD())
-
-	var remote SSHConfigServer
-	var remote_name string
-
-	if user, ok := config.Users[usr]; !ok {
-		fmt.Fprintf(sesschan, "User %s has no permitted remote hosts.\r\n", usr)
-		sesschan.Close()
-		return
-	} else {
-		if acl, ok := config.ACLs[user.ACL]; !ok {
-			fmt.Fprintf(sesschan, "Error processing server selection (Invalid ACL).\r\n")
-			log.Printf("Invalid ACL detected for user %s.", sshConn.User())
-			sesschan.Close()
-			return
-		} else {
-			var svr string
-			if strings.Contains(sshConn.User(), "#") {
-				rawuser := strings.Split(sshConn.User(), "#")
-				svrok := false
-				for i := range acl.AllowedServers {
-					if rawuser[len(rawuser)-1] == acl.AllowedServers[i] {
-						svrok = true
-						svr = rawuser[len(rawuser)-1]
-					}
-				}
-				if svrok == false {
-					fmt.Fprintf(sesschan, "Error processing server selection.\r\n")
-					log.Printf("Invalid ACL detected for user %s.", sshConn.User())
-					sesschan.Close()
-					return
-				}
-			} else {
-				svr, err = InteractiveSelection(sesschan, "Please choose from the following servers:", acl.AllowedServers)
-				if err != nil {
-					fmt.Fprintf(sesschan, "Error processing server selection.\r\n")
-					sesschan.Close()
-					return
-				}
-			}
-			if server, ok := config.Servers[svr]; !ok {
-				fmt.Fprintf(sesschan, "Incorrectly Configured Server Selected.\r\n")
-				sesschan.Close()
-				return
-			} else {
-				remote_name = svr
-				remote = server
-			}
-		}
-	}
-	trm := terminal.NewTerminal(sesschan, "")
-	fmt.Fprintf(sesschan, "You will connect to %s with the username %s, press enter to continue.\r\n", remote_name, lgnusr)
-	_, _ = trm.ReadLine()
-	if strings.Contains(sshConn.User(), "#") == false {
-		fmt.Fprintf(sesschan, "Do you want to specify a user? (If not, just keep it blank): ")
-		lgnusr, _ = trm.ReadLine()
-	}
-	err = sesschan.SyncToFile(remote_name)
-	if err != nil {
-		fmt.Fprintf(sesschan, "Failed to Initialize Session.\r\n")
-		sesschan.Close()
-		return
-	}
-
-	WriteAuthLog("Connecting to remote for relay (%s) by %s from %s.", remote.ConnectPath, sshConn.User(), sshConn.RemoteAddr())
-	fmt.Fprintf(sesschan, "Connecting to %s\r\n", remote_name)
-	var clientConfig *ssh.ClientConfig
-	var lgnauth []ssh.AuthMethod
-	cnfuser := config.Users[usr]
-	fmt.Println("agentForwarding", agentForwarding)
-	if agentForwarding == false {
-		if len(cnfuser.IdrsaKeysFile) > 0 {
-			fmt.Fprintf(sesschan, "Do you want to do auth using the keyfile? [y/n]: ")
-			var keyd string
-			keyd, _ = trm.ReadLine()
-			if keyd == "y" {
-				key, err := ioutil.ReadFile(cnfuser.IdrsaKeysFile)
-				if err != nil {
-					log.Fatalf("unable to read private key: %v", err)
-				}
-				// Create the Signer for this private key.
-				signer, err := ssh.ParsePrivateKey(key)
-				if err != nil {
-					log.Fatalf("unable to parse private key: %v", err)
-				}
-				lgnauth = []ssh.AuthMethod{
-					// Use the PublicKeys method for remote authentication.
-					ssh.PublicKeys(signer),
-				}
-			} else {
-				lgnauth = []ssh.AuthMethod{
-					ssh.PasswordCallback(func() (secret string, err error) {
-						if secret, ok := sshConn.Permissions.Extensions["password"]; ok && config.Global.PassPassword {
-							return secret, nil
-						} else {
-							//log.Printf("Prompting for password for remote...")
-							t := terminal.NewTerminal(sesschan, "")
-							s, err := t.ReadPassword(fmt.Sprintf("%s@%s password: ", clientConfig.User, remote_name))
-							//log.Printf("Got password for remote auth, err: %s", err)
-							return s, err
-						}
-					}),
-				}
-			}
-		} else {
-			lgnauth = []ssh.AuthMethod{
-				ssh.PasswordCallback(func() (secret string, err error) {
-					if secret, ok := sshConn.Permissions.Extensions["password"]; ok && config.Global.PassPassword {
-						return secret, nil
-					} else {
-						//log.Printf("Prompting for password for remote...")
-						t := terminal.NewTerminal(sesschan, "")
-						s, err := t.ReadPassword(fmt.Sprintf("%s@%s password: ", clientConfig.User, remote_name))
-						//log.Printf("Got password for remote auth, err: %s", err)
-						return s, err
-					}
-				}),
-			}
-		}
-	}
-	fmt.Println("agentForwarding", agentForwarding)
-	clientConfig = &ssh.ClientConfig{
-		User: lgnusr,
-		Auth: lgnauth,
-		HostKeyCallback: func(hostname string, remote_addr net.Addr, key ssh.PublicKey) error {
-			for _, keyFileName := range remote.HostPubKeyFiles {
-				hostKeyData, err := ioutil.ReadFile(keyFileName)
-				if err != nil {
-					log.Printf("Error reading host key file (%s) for remote (%s): %s", keyFileName, remote_name, err)
-					continue
-				}
-
-				hostKey, _, _, _, err := ssh.ParseAuthorizedKey(hostKeyData)
-				if err != nil {
-					log.Printf("Error parsing host key file (%s) for remote (%s): %s", keyFileName, remote_name, err)
-					continue
-				}
-
-				if (key.Type() == hostKey.Type()) && (bytes.Compare(key.Marshal(), hostKey.Marshal()) == 0) {
-					log.Printf("Accepting host public key from file (%s) for remote (%s).", keyFileName, remote_name)
-					return nil
-				}
-			}
-			WriteAuthLog("Host key validation failed for remote %s by user %s from %s.", remote.ConnectPath, sshConn.User(), remote_addr)
-			if config.Global.StrictHostKeyCheck {
-				return fmt.Errorf("HOST KEY VALIDATION FAILED - POSSIBLE MITM BETWEEN RELAY AND REMOTE")
-			} else {
-				return nil
-			}
-		},
-	}
-	if len(remote.LoginUser) > 0 {
-		clientConfig.User = remote.LoginUser
-	}
-
-	// Set up the agent
-	if agentForwarding {
-		agentChan, agentReqs, err := sshConn.OpenChannel("auth-agent@openssh.com", nil)
-		if err == nil {
-			defer agentChan.Close()
-			go ssh.DiscardRequests(agentReqs)
-
-			// Set up the client
-			ag := agent.NewClient(agentChan)
-
-			// Make sure PK is first in the list if supported.
-			clientConfig.Auth = append([]ssh.AuthMethod{ssh.PublicKeysCallback(ag.Signers)}, clientConfig.Auth...)
-		}
-	}
-
-	log.Printf("Getting Ready to Dial Remote SSH %s", remote_name)
-	client, err := ssh.Dial("tcp", remote.ConnectPath, clientConfig)
-	if err != nil {
-		fmt.Fprintf(sesschan, "Connect failed: %v\r\n", err)
-		sesschan.Close()
-		return
-	}
-	defer client.Close()
-	log.Printf("Dialled Remote SSH Successfully...")
 
 	// Forward the session channel
-	log.Printf("Setting up channel to remote %s", remote_name)
+	log.Printf("Setting up channel to remote %s", targetAddress)
 	channel2, reqs2, err := client.OpenChannel("session", []byte{})
 	if err != nil {
 		fmt.Fprintf(sesschan, "Remote session setup failed: %v\r\n", err)
 		sesschan.Close()
 		return
 	}
-	WriteAuthLog("Connected to remote for relay (%s) by %s from %s.", remote.ConnectPath, sshConn.User(), sshConn.RemoteAddr())
-	defer WriteAuthLog("Disconnected from remote for relay (%s) by %s from %s.", remote.ConnectPath, sshConn.User(), sshConn.RemoteAddr())
+	WriteAuthLog("Connected to remote for relay (%s) by %s from %s.", targetAddress, userName, sshConn.RemoteAddr())
+	defer WriteAuthLog("Disconnected from remote for relay (%s) by %s from %s.", targetAddress, userName, sshConn.RemoteAddr())
 
 	log.Printf("Starting session proxy...")
-	proxy(maskedReqs, reqs2, sesschan, channel2)
+	proxy(maskedReqs, reqs2, sesschan, channel2, sesschan)
 }
 
-func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1 *LogChannel, channel2 ssh.Channel) {
+func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1 ssh.Channel, channel2 ssh.Channel, log *LogChannel) {
 	var closer sync.Once
 	closeFunc := func() {
 		channel1.Close()
@@ -316,6 +210,7 @@ func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1 *LogChannel, channel2 ssh.
 			if req == nil {
 				return
 			}
+			log.LogRequest(req)
 			b, err := channel2.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
 				return
@@ -325,6 +220,7 @@ func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1 *LogChannel, channel2 ssh.
 			if req == nil {
 				return
 			}
+			log.LogRequest(req)
 			b, err := channel1.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
 				return

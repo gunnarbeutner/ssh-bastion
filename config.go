@@ -9,36 +9,20 @@ import (
 type SSHConfig struct {
 	Global  SSHConfigGlobal            `yaml:"global"`
 	Servers map[string]SSHConfigServer `yaml:"servers"`
-	ACLs    map[string]SSHConfigACL    `yaml:"acls"`
-	Users   map[string]SSHConfigUser   `yaml:"users"`
+	Keys    map[string][]string        `yaml:"keys"`
 }
 
 type SSHConfigGlobal struct {
-	MOTDPath           string   `yaml:"motd_path"`
-	LogPath            string   `yaml:"log_path"`
-	HostKeyPaths       []string `yaml:"host_keys"`
-	AuthType           string   `yaml:"auth_type"`
-	LDAP_Server        string   `yaml:"ldap_server"`
-	LDAP_Domain        string   `yaml:"ldap_domain"`
-	PassPassword       bool     `yaml:"pass_password"`
-	ListenPath         string   `yaml:"listen_path"`
-	StrictHostKeyCheck bool     `yaml:"strict_host_key_check"`
+	LogPath        string   `yaml:"log_path"`
+	HostKeyPaths   []string `yaml:"host_keys"`
+	ListenPath     string   `yaml:"listen_path"`
+	KnownHostsFile string   `yaml:"known_hosts_file"`
+	KeytabPath     string   `yaml:"keytab_file"`
 }
 
 type SSHConfigServer struct {
 	HostPubKeyFiles []string `yaml:"host_pubkeys"`
 	ConnectPath     string   `yaml:"connect_path"`
-	LoginUser       string   `yaml:"login_user"`
-}
-
-type SSHConfigACL struct {
-	AllowedServers []string `yaml:"allow_list"`
-}
-
-type SSHConfigUser struct {
-	ACL                string `yaml:"acl"`
-	AuthorizedKeysFile string `yaml:"authorized_keys_file"`
-	IdrsaKeysFile      string `yaml:"idrsa_keys_file"`
 }
 
 func fetchConfig(filename string) (*SSHConfig, error) {

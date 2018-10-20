@@ -50,12 +50,12 @@ func NewLogChannel(startTime time.Time, channel ssh.Channel, username string) *L
 func (l *LogChannel) SyncToFile(remote_name string) error {
 	var err error
 
-	filepath := fmt.Sprintf("%s/%d/%d", config.Global.LogPath, l.StartTime.Year(), l.StartTime.Month())
+	filepath := fmt.Sprintf("%s/%s/%s", config.Global.LogPath, remote_name, l.UserName)
 	err = os.MkdirAll(filepath, 0750)
 	if err != nil {
 		return fmt.Errorf("Unable to create required log directory (%s): %s", filepath, err)
 	}
-	filename := filepath + "/" + fmt.Sprintf("ssh_log_%s_%s_%s", l.StartTime.Format(time.RFC3339), l.UserName, remote_name)
+	filename := filepath + "/" + fmt.Sprintf("ssh_log_%s", l.StartTime.Format(time.RFC3339))
 
 	l.logMutex.Lock()
 
@@ -125,6 +125,14 @@ func (l *LogChannel) Write(data []byte) (int, error) {
 	return l.ActualChannel.Write(data)
 }
 
+func (l *LogChannel) CloseWrite() error {
+	return l.ActualChannel.CloseWrite()
+}
+
+func (l *LogChannel) Stderr() io.ReadWriter {
+	return l.ActualChannel.Stderr()
+}
+
 func (l *LogChannel) Close() error {
 	if l.fd != nil {
 		l.fd.Close()
@@ -140,7 +148,32 @@ func (l *LogChannel) Close() error {
 }
 
 func (l *LogChannel) LogRequest(r *ssh.Request) {
-	logLine := fmt.Sprintf("%s: Request Type - %s - Want Reply: %t - Payload: %#v\r\n", time.Now().Format(time.RFC3339), r.Type, r.WantReply, r.Payload)
+	var payload interface{}
+	if r.Type == "env" {
+		type envRequest struct {
+			Name  string
+			Value string
+		}
+		var pl envRequest
+		if err := ssh.Unmarshal(r.Payload, &pl); err != nil {
+			payload = r.Payload
+		} else {
+			payload = fmt.Sprintf("name: %s, value: %s", pl.Name, pl.Value)
+		}
+	} else if r.Type == "exec" {
+		type execRequest struct {
+			Command string
+		}
+		var pl execRequest
+		if err := ssh.Unmarshal(r.Payload, &pl); err != nil {
+			payload = r.Payload
+		} else {
+			payload = pl.Command
+		}
+	} else {
+		payload = r.Payload
+	}
+	logLine := fmt.Sprintf("%s: Request Type - %s - Want Reply: %t - Payload: %#v\r\n", time.Now().Format(time.RFC3339), r.Type, r.WantReply, payload)
 	if l.fd_req != nil {
 		l.fd_req.Write([]byte(logLine))
 	} else {

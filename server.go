@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"golang.org/x/crypto/ssh"
 	"io/ioutil"
-	"log"
 	"net"
-	"strings"
 	"time"
 )
 
@@ -18,61 +15,8 @@ type SSHServer struct {
 func NewSSHServer() (*SSHServer, error) {
 	s := &SSHServer{
 		sshConfig: &ssh.ServerConfig{
-			NoClientAuth:  false,
+			NoClientAuth:  true,
 			ServerVersion: "SSH-2.0-BASTION",
-			AuthLogCallback: func(conn ssh.ConnMetadata, method string, err error) {
-				if err != nil {
-					WriteAuthLog("Failed %s for user %s from %s ssh2", method, conn.User(), conn.RemoteAddr())
-				} else {
-					WriteAuthLog("Accepted %s for user %s from %s ssh2", method, conn.User(), conn.RemoteAddr())
-				}
-			},
-			PasswordCallback: AuthUserPass,
-			PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-				var usr string
-				if strings.Contains(conn.User(), "#") {
-					rawuser := strings.Split(conn.User(), "#")
-					usr = rawuser[0]
-				} else {
-					usr = conn.User()
-				}
-				if user, ok := config.Users[usr]; !ok {
-					return nil, fmt.Errorf("User Not Found in Config for PK")
-				} else {
-					if len(user.AuthorizedKeysFile) > 0 {
-						authKeysData, err := ioutil.ReadFile(user.AuthorizedKeysFile)
-						if err != nil {
-							log.Printf("Unable to read authorized keys file (%s) for user (%s): %s.", user.AuthorizedKeysFile, conn.User(), err)
-							return nil, fmt.Errorf("Unable to read Authorized Keys file.")
-						}
-
-						for {
-							if len(authKeysData) > 0 {
-								var authKey ssh.PublicKey
-								var err error
-								authKey, _, _, authKeysData, err = ssh.ParseAuthorizedKey(authKeysData)
-								if err != nil {
-									log.Printf("Error while processing authorized keys file (%s) for user (%s)", user.AuthorizedKeysFile, conn.User(), err)
-									return nil, fmt.Errorf("Error while processing authorized keys file.")
-								}
-
-								if (key.Type() == authKey.Type()) && (bytes.Compare(key.Marshal(), authKey.Marshal()) == 0) {
-									perm := &ssh.Permissions{
-										Extensions: map[string]string{
-											"authType": "pk",
-										},
-									}
-									return perm, nil
-								}
-							} else {
-								return nil, fmt.Errorf("No PKs Match - ACCESS DENIED")
-							}
-						}
-					} else {
-						return nil, fmt.Errorf("User has not authorized keys file specified.")
-					}
-				}
-			},
 		},
 	}
 
@@ -93,27 +37,7 @@ func NewSSHServer() (*SSHServer, error) {
 	return s, nil
 }
 
-func (s *SSHServer) ListenAndServe(addr string) error {
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-
-	return s.Serve(l)
-}
-
-func (s *SSHServer) Serve(l net.Listener) error {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return err
-		}
-
-		go s.HandleConn(conn)
-	}
-}
-
-func (s *SSHServer) HandleConn(c net.Conn) {
+func (s *SSHServer) HandleConn(c net.Conn, username, serverName string, groupSIDs []string) {
 	//log.Printf("Starting Accept SSH Connection...")
 	startTime := time.Now()
 
@@ -123,13 +47,7 @@ func (s *SSHServer) HandleConn(c net.Conn) {
 		c.Close()
 		return
 	}
-	defer WriteAuthLog("Connection closed by %s (User: %s).", sshConn.RemoteAddr(), sshConn.User())
-
-	if sshConn.Permissions == nil || sshConn.Permissions.Extensions == nil {
-		//log.Printf("Exiting as there is an authentication problem...")
-		sshConn.Close()
-		return
-	}
+	defer WriteAuthLog("Connection closed by %s (User: %s).", sshConn.RemoteAddr(), username)
 
 	go ssh.DiscardRequests(reqs)
 	newChannel := <-chans
@@ -141,7 +59,7 @@ func (s *SSHServer) HandleConn(c net.Conn) {
 
 	switch newChannel.ChannelType() {
 	case "session":
-		s.SessionForward(startTime, sshConn, newChannel, chans)
+		s.SessionForward(startTime, sshConn, newChannel, chans, username, serverName, groupSIDs)
 	default:
 		newChannel.Reject(ssh.UnknownChannelType, "connection flow not supported, only interactive sessions are permitted.")
 	}
