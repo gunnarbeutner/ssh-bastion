@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"strings"
 )
 
 type LogChannel struct {
@@ -22,6 +23,7 @@ type LogChannel struct {
 	initialBuffer *bytes.Buffer
 	ttyrecBuffer  *bytes.Buffer
 	reqBuffer     *bytes.Buffer
+	unlogged      bool
 	logMutex      *sync.Mutex
 }
 
@@ -106,7 +108,7 @@ func (l *LogChannel) Read(data []byte) (int, error) {
 
 func (l *LogChannel) Write(data []byte) (int, error) {
 	l.logMutex.Lock()
-	if len(data) > 0 {
+	if !l.unlogged && len(data) > 0 {
 		if l.fd != nil {
 			l.fd.Write(data)
 		} else {
@@ -169,6 +171,11 @@ func (l *LogChannel) LogRequest(r *ssh.Request) {
 			payload = r.Payload
 		} else {
 			payload = pl.Command
+
+			toks := strings.Split(pl.Command, " ")
+			if toks[0] == "scp" || toks[0] == "rsync" {
+				l.unlogged = true
+			}
 		}
 	} else {
 		payload = r.Payload
